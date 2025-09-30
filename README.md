@@ -45,7 +45,14 @@ The first time you run the application, it will:
 You can also connect to specific peers using their multiaddresses:
 
 ```bash
+# On Windows with CMD or PowerShell:
 cargo run -- --connect /ip4/192.168.1.100/tcp/12345
+
+# On Windows with Git Bash (note the double slashes):
+cargo run -- --connect //ip4/192.168.1.100/tcp/12345
+
+# Alternative for Git Bash:
+cargo run -- "--connect" "\/ip4/192.168.1.100/tcp/12345"
 ```
 
 ### Specifying listen address
@@ -75,6 +82,18 @@ If you see this error when sending messages, it means there are no other peers c
 3. Network issues prevent peer discovery
 
 The application now handles this gracefully by echoing your messages locally with a note that they weren't broadcast.
+
+### Git Bash Path Issue on Windows
+
+When using Git Bash on Windows, you might encounter an error like:
+```
+error: invalid value 'C:/Program Files/Git/ip4/172.29.88.251/tcp/55984' for '--connect <CONNECT>': invalid multiaddr
+```
+
+This is a known issue with Git Bash path handling. Use one of these solutions:
+1. Use double slashes: `cargo run -- --connect //ip4/172.29.88.251/tcp/55984`
+2. Use PowerShell or CMD instead of Git Bash
+3. Escape the path: `cargo run -- "--connect" "\/ip4/172.29.88.251/tcp/55984"`
 
 ## How it works
 
