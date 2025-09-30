@@ -216,7 +216,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 })) => {
                     // Check which topic the message is from by comparing with our subscribed topics
                     // For chat messages
-                    if swarm.behaviour().gossipsub.topics().any(|t| t == &chat_topic.hash()) {
+                    if message.topic == chat_topic.hash() {
                         // Chat message
                         if let Ok(text) = String::from_utf8(message.data) {
                             info!("Received message from {}: {}", peer_id, text);
@@ -224,7 +224,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     } 
                     // For clipboard messages
                     else if let Some(ref clipboard_topic) = clipboard_topic {
-                        if swarm.behaviour().gossipsub.topics().any(|t| t == &clipboard_topic.hash()) {
+                        if message.topic == clipboard_topic.hash() {
                             // Handle clipboard message
                             if let Ok(content) = serde_json::from_slice::<clipboard::ClipboardContent>(&message.data) {
                                 // Handle clipboard content in a separate task
