@@ -8,7 +8,7 @@ use std::{
     error::Error, 
     hash::{Hash, Hasher}, 
     net::IpAddr, 
-    time::Duration
+    time::Duration,
 };
 use libp2p::{
     gossipsub, identify, identity, 
@@ -21,16 +21,17 @@ use libp2p::{
 // Default ports
 const PORT_TCP: u16 = 0;  // 0 means OS will assign a random available port
 const CHAT_TOPIC: &str = "libp2p-chat";
+const CLIPBOARD_TOPIC: &str = "libp2p-clipboard";
 
 #[derive(NetworkBehaviour)]
-struct ChatBehaviour {
+struct AppBehaviour {
     identify: identify::Behaviour,
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
 }
 
 #[derive(Parser, Debug)]
-#[clap(name = "libp2p chat", version = "1.0", author = "Your Name")]
+#[clap(name = "libp2p app", version = "1.0", author = "Eric Xu")]
 struct Args {
     /// Address to listen on
     #[clap(long, default_value = "0.0.0.0")]
@@ -39,7 +40,13 @@ struct Args {
     /// Nodes to connect to on startup
     #[clap(long)]
     connect: Option<Vec<Multiaddr>>,
+    
+    /// Enable clipboard sync
+    #[clap(long)]
+    clipboard: bool,
 }
+
+mod clipboard;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -60,6 +67,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let chat_topic = gossipsub::IdentTopic::new(CHAT_TOPIC);
     swarm.behaviour_mut().gossipsub.subscribe(&chat_topic)
         .map_err(|e| anyhow::anyhow!("Failed to subscribe to chat topic: {:?}", e))?;
+    
+    // Subscribe to clipboard topic if enabled
+    let clipboard_topic = if args.clipboard {
+        let topic = gossipsub::IdentTopic::new(CLIPBOARD_TOPIC);
+        swarm.behaviour_mut().gossipsub.subscribe(&topic)
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to clipboard topic: {:?}", e))?;
+        info!("Clipboard sync enabled");
+        Some(topic)
+    } else {
+        None
+    };
 
     // Build listening addresses
     let tcp_address = Multiaddr::from(args.listen_address)
@@ -77,6 +95,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Err(e) = swarm.dial(addr.clone()) {
                 error!("Failed to dial {addr}: {e}");
             }
+        }
+    }
+
+    // Initialize clipboard sync if enabled
+    let mut clipboard_rx = None;
+    if args.clipboard {
+        // Create a channel for clipboard content
+        let (clipboard_tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        clipboard_rx = Some(rx);
+        
+        // Start clipboard monitoring in a separate task
+        if let Some(ref clipboard_topic) = clipboard_topic {
+            let _clipboard_topic_clone = clipboard_topic.clone();
+            let clipboard_tx_clone = clipboard_tx.clone();
+            
+            tokio::spawn(async move {
+                let clipboard = clipboard::ClipboardSync::new().expect("Failed to create clipboard sync");
+                
+                // Start monitoring clipboard changes
+                clipboard.start_monitoring(move |content| {
+                    // Convert content to bytes for network transmission
+                    if let Ok(data) = serde_json::to_vec(&content) {
+                        // Send clipboard content to the main thread for network transmission
+                        let _ = clipboard_tx_clone.send(data);
+                    }
+                }).await.expect("Failed to start clipboard monitoring");
+            });
         }
     }
 
@@ -108,6 +153,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             
+            // Handle clipboard content to be sent
+            Some(data) = async {
+                if let Some(ref mut rx) = clipboard_rx {
+                    rx.recv().await
+                } else {
+                    futures::future::pending().await
+                }
+            } => {
+                // Send clipboard content to network
+                if let Some(ref clipboard_topic) = clipboard_topic {
+                    // Check if there are peers subscribed to the clipboard topic
+                    let clipboard_peers = swarm.behaviour().gossipsub.all_peers()
+                        .filter(|(_, topics)| topics.iter().any(|t| **t == clipboard_topic.hash()))
+                        .count();
+                    
+                    if clipboard_peers > 0 {
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(clipboard_topic.clone(), data) {
+                            error!("Failed to publish clipboard content: {:?}", e);
+                        } else {
+                            info!("Clipboard content published to {} peers", clipboard_peers);
+                        }
+                    } else {
+                        println!("No peers subscribed to clipboard topic. Content not published.\n");
+                    }
+                }
+            }
+            
             // Handle swarm events
             event = swarm.select_next_some() => match event {
                 SwarmEvent::NewListenAddr { address, .. } => {
@@ -115,21 +187,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 },
                 
                 // Identify events
-                SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(identify::Event::Sent { peer_id, .. })) => {
+                SwarmEvent::Behaviour(AppBehaviourEvent::Identify(identify::Event::Sent { peer_id, .. })) => {
                     info!("Sent identify info to {peer_id:?}")
                 }
-                SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
+                SwarmEvent::Behaviour(AppBehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
                     info!("Received identify info from peer: {info:?}")
                 },
                 
                 // mDNS events
-                SwarmEvent::Behaviour(ChatBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                SwarmEvent::Behaviour(AppBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                     for (peer_id, multiaddr) in list {
                         info!("mDNS discovered a new peer: {peer_id} at {multiaddr}");
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
                 },
-                SwarmEvent::Behaviour(ChatBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
+                SwarmEvent::Behaviour(AppBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                     for (peer_id, _multiaddr) in list {
                         info!("mDNS peer has expired: {peer_id}");
                         swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
@@ -137,18 +209,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 },
                 
                 // Gossipsub events
-                SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                SwarmEvent::Behaviour(AppBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                     propagation_source: peer_id,
                     message_id: _id,
                     message,
                 })) => {
-                    if let Ok(text) = String::from_utf8(message.data) {
-                        info!("Received message from {}: {}", peer_id, text);
+                    // Check which topic the message is from by comparing with our subscribed topics
+                    // For chat messages
+                    if swarm.behaviour().gossipsub.topics().any(|t| t == &chat_topic.hash()) {
+                        // Chat message
+                        if let Ok(text) = String::from_utf8(message.data) {
+                            info!("Received message from {}: {}", peer_id, text);
+                        }
+                    } 
+                    // For clipboard messages
+                    else if let Some(ref clipboard_topic) = clipboard_topic {
+                        if swarm.behaviour().gossipsub.topics().any(|t| t == &clipboard_topic.hash()) {
+                            // Handle clipboard message
+                            if let Ok(content) = serde_json::from_slice::<clipboard::ClipboardContent>(&message.data) {
+                                // Handle clipboard content in a separate task
+                                tokio::spawn(async move {
+                                    let clipboard = clipboard::ClipboardSync::new().expect("Failed to create clipboard sync");
+                                    if let Err(e) = clipboard.handle_incoming_content(content).await {
+                                        error!("Failed to handle incoming clipboard content: {:?}", e);
+                                    }
+                                });
+                            }
+                        }
                     }
                 },
                 
-                SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
-                    info!("Peer {peer_id} subscribed to {topic}");
+                SwarmEvent::Behaviour(AppBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                    info!("Peer {peer_id} subscribed to topic {topic}");
                 }
                 
                 // Connection events
@@ -170,7 +262,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn create_swarm(local_key: identity::Keypair) -> Result<Swarm<ChatBehaviour>> {
+fn create_swarm(local_key: identity::Keypair) -> Result<Swarm<AppBehaviour>> {
     let local_peer_id = PeerId::from(local_key.public());
     debug!("Creating swarm for local peer id: {local_peer_id}");
 
@@ -205,7 +297,7 @@ fn create_swarm(local_key: identity::Keypair) -> Result<Swarm<ChatBehaviour>> {
     ).map_err(|e| anyhow::anyhow!("Failed to create mdns behaviour: {:?}", e))?;
 
     // Create the behaviour
-    let behaviour = ChatBehaviour {
+    let behaviour = AppBehaviour {
         gossipsub,
         identify,
         mdns
