@@ -12,6 +12,9 @@ pub struct ClipboardContent {
     pub content_type: ContentType,
     pub data: Vec<u8>,
     pub timestamp: u64,
+    // Add width and height for image content
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 /// Type of clipboard content
@@ -31,11 +34,13 @@ impl ClipboardContent {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            width: None,
+            height: None,
         }
     }
     
     /// Create a new image clipboard content
-    pub fn new_image(data: Vec<u8>) -> Self {
+    pub fn new_image(data: Vec<u8>, width: u32, height: u32) -> Self {
         Self {
             content_type: ContentType::Image,
             data,
@@ -43,6 +48,8 @@ impl ClipboardContent {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            width: Some(width),
+            height: Some(height),
         }
     }
     
@@ -126,8 +133,8 @@ impl ClipboardSync {
                 let current_image_data = {
                     let mut clipboard = clipboard.lock().await;
                     clipboard.get_image().ok().map(|img_data| {
-                        // Convert image data to bytes
-                        img_data.bytes.to_vec()
+                        // Convert image data to bytes and get dimensions
+                        (img_data.bytes.to_vec(), img_data.width as u32, img_data.height as u32)
                     })
                 };
                 
@@ -169,7 +176,7 @@ impl ClipboardSync {
                     previous_image_hash = None;
                 }
                 // Check if image content has changed
-                else if let Some(image_data) = current_image_data {
+                else if let Some((image_data, width, height)) = current_image_data {
                     // Calculate hash of image data to detect changes
                     let image_hash = {
                         use std::collections::hash_map::DefaultHasher;
@@ -180,7 +187,7 @@ impl ClipboardSync {
                     };
                     
                     if Some(image_hash) != previous_image_hash {
-                        println!("Clipboard image changed ({} bytes)", image_data.len());
+                        println!("Clipboard image changed ({} bytes, {}x{})", image_data.len(), width, height);
                         
                         // Check if this is different from our last sent content
                         let should_send = {
@@ -197,7 +204,7 @@ impl ClipboardSync {
                         };
                         
                         if should_send {
-                            let content = ClipboardContent::new_image(image_data.clone());
+                            let content = ClipboardContent::new_image(image_data.clone(), width, height);
                             
                             // Update last content
                             {
@@ -223,7 +230,8 @@ impl ClipboardSync {
 
     /// Handle incoming clipboard content from network
     pub async fn handle_incoming_content(&self, content: ClipboardContent) -> Result<()> {
-        println!("Received clipboard content: {:?}", content.content_type);
+        println!("Received clipboard content: {:?} ({}x{})", content.content_type, 
+                 content.width.unwrap_or(0), content.height.unwrap_or(0));
         
         // Update last content to prevent echo
         {
@@ -252,11 +260,15 @@ impl ClipboardSync {
                 }
                 ContentType::Image => {
                     if let Some(image_data) = content.image() {
-                        println!("Setting clipboard image ({} bytes)", image_data.len());
-                        // Create proper ImageData from the received bytes
+                        println!("Setting clipboard image ({} bytes, {}x{})", 
+                                 image_data.len(), 
+                                 content.width.unwrap_or(0), 
+                                 content.height.unwrap_or(0));
+                        
+                        // Create proper ImageData from the received bytes with correct dimensions
                         clipboard.set_image(arboard::ImageData {
-                            width: 0,  // Will be determined from data
-                            height: 0, // Will be determined from data
+                            width: content.width.unwrap_or(100) as usize,  // Use received width or default
+                            height: content.height.unwrap_or(100) as usize, // Use received height or default
                             bytes: std::borrow::Cow::Borrowed(image_data),
                         })
                         .context("Failed to set clipboard image")
