@@ -69,6 +69,8 @@ impl ClipboardContent {
 pub struct ClipboardSync {
     clipboard: Arc<Mutex<Clipboard>>,
     last_content: Arc<Mutex<Option<ClipboardContent>>>,
+    // Flag to indicate if we're setting content from network (to prevent echo)
+    setting_from_network: Arc<Mutex<bool>>,
 }
 
 impl ClipboardSync {
@@ -80,6 +82,7 @@ impl ClipboardSync {
         Ok(Self {
             clipboard: Arc::new(Mutex::new(clipboard)),
             last_content: Arc::new(Mutex::new(None)),
+            setting_from_network: Arc::new(Mutex::new(false)),
         })
     }
 
@@ -92,24 +95,45 @@ impl ClipboardSync {
         
         let clipboard = self.clipboard.clone();
         let last_content = self.last_content.clone();
+        let setting_from_network = self.setting_from_network.clone();
         
         // Spawn a task to monitor clipboard changes
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(500)); // Check every 500ms
             let mut previous_text: Option<String> = None;
+            let mut previous_image_hash: Option<u64> = None; // Track image changes by hash
             
             loop {
                 interval.tick().await;
                 
-                // Try to get clipboard content
-                let current_content = {
+                // Check if we're currently setting content from network
+                let is_setting_from_network = {
+                    let guard = setting_from_network.lock().await;
+                    *guard
+                };
+                
+                if is_setting_from_network {
+                    // Skip this cycle if we're setting content from network
+                    continue;
+                }
+                
+                // Try to get clipboard content (both text and image)
+                let current_text = {
                     let mut clipboard = clipboard.lock().await;
                     clipboard.get_text().ok()
                 };
                 
-                // Check if content has changed
-                if current_content != previous_text {
-                    if let Some(ref text) = current_content {
+                let current_image_data = {
+                    let mut clipboard = clipboard.lock().await;
+                    clipboard.get_image().ok().map(|img_data| {
+                        // Convert image data to bytes
+                        img_data.bytes.to_vec()
+                    })
+                };
+                
+                // Check if text content has changed
+                if current_text != previous_text {
+                    if let Some(ref text) = current_text {
                         println!("Clipboard text changed: {}", text);
                         
                         // Check if this is different from our last sent content
@@ -140,7 +164,56 @@ impl ClipboardSync {
                         }
                     }
                     
-                    previous_text = current_content;
+                    previous_text = current_text;
+                    // Reset image hash since we're dealing with text now
+                    previous_image_hash = None;
+                }
+                // Check if image content has changed
+                else if let Some(image_data) = current_image_data {
+                    // Calculate hash of image data to detect changes
+                    let image_hash = {
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::Hasher;
+                        let mut hasher = DefaultHasher::new();
+                        hasher.write(&image_data);
+                        hasher.finish()
+                    };
+                    
+                    if Some(image_hash) != previous_image_hash {
+                        println!("Clipboard image changed ({} bytes)", image_data.len());
+                        
+                        // Check if this is different from our last sent content
+                        let should_send = {
+                            let last = last_content.lock().await;
+                            if let Some(ref last_content) = *last {
+                                if let Some(last_image) = last_content.image() {
+                                    last_image != image_data.as_slice()
+                                } else {
+                                    true // Last content was not image
+                                }
+                            } else {
+                                true // No previous content
+                            }
+                        };
+                        
+                        if should_send {
+                            let content = ClipboardContent::new_image(image_data.clone());
+                            
+                            // Update last content
+                            {
+                                let mut last = last_content.lock().await;
+                                *last = Some(content.clone());
+                            }
+                            
+                            // Call the callback with the new content
+                            callback(content);
+                        }
+                        
+                        previous_image_hash = Some(image_hash);
+                    }
+                } else {
+                    // No image data available, reset image hash
+                    previous_image_hash = None;
                 }
             }
         });
@@ -158,30 +231,49 @@ impl ClipboardSync {
             *last = Some(content.clone());
         }
         
-        let mut clipboard = self.clipboard.lock().await;
-        
-        match content.content_type {
-            ContentType::Text => {
-                if let Some(text) = content.text() {
-                    println!("Setting clipboard text: {}", text);
-                    clipboard.set_text(text)
-                        .context("Failed to set clipboard text")?;
-                }
-            }
-            ContentType::Image => {
-                println!("Setting clipboard image ({} bytes)", content.data.len());
-                // For images, we need to determine the format
-                // This is a simplified implementation
-                clipboard.set_image(arboard::ImageData {
-                    width: 100,  // Placeholder values
-                    height: 100, // Placeholder values
-                    bytes: std::borrow::Cow::Borrowed(&content.data),
-                })
-                .context("Failed to set clipboard image")?;
-            }
+        // Set the flag to indicate we're setting content from network
+        {
+            let mut setting = self.setting_from_network.lock().await;
+            *setting = true;
         }
         
-        Ok(())
+        let result = {
+            let mut clipboard = self.clipboard.lock().await;
+            
+            match content.content_type {
+                ContentType::Text => {
+                    if let Some(text) = content.text() {
+                        println!("Setting clipboard text: {}", text);
+                        clipboard.set_text(text)
+                            .context("Failed to set clipboard text")
+                    } else {
+                        Ok(())
+                    }
+                }
+                ContentType::Image => {
+                    if let Some(image_data) = content.image() {
+                        println!("Setting clipboard image ({} bytes)", image_data.len());
+                        // Create proper ImageData from the received bytes
+                        clipboard.set_image(arboard::ImageData {
+                            width: 0,  // Will be determined from data
+                            height: 0, // Will be determined from data
+                            bytes: std::borrow::Cow::Borrowed(image_data),
+                        })
+                        .context("Failed to set clipboard image")
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        };
+        
+        // Reset the flag after setting content
+        {
+            let mut setting = self.setting_from_network.lock().await;
+            *setting = false;
+        }
+        
+        result
     }
 }
 
