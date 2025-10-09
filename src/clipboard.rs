@@ -179,32 +179,16 @@ impl ClipboardSync {
                     if Some(image_hash) != previous_image_hash {
                         println!("Clipboard image changed ({} bytes, {}x{})", image_data.len(), width, height);
                         
-                        // Check if this is different from our last sent content
-                        let should_send = {
-                            let last = last_content.lock().await;
-                            if let Some(ref last_content) = *last {
-                                if let Some(last_image) = last_content.image() {
-                                    last_image != image_data.as_slice()
-                                } else {
-                                    true // Last content was not image
-                                }
-                            } else {
-                                true // No previous content
-                            }
-                        };
+                        let content = ClipboardContent::new_image(image_data.clone(), width, height);
                         
-                        if should_send {
-                            let content = ClipboardContent::new_image(image_data.clone(), width, height);
-                            
-                            // Update last content
-                            {
-                                let mut last = last_content.lock().await;
-                                *last = Some(content.clone());
-                            }
-                            
-                            // Call the callback with the new content
-                            callback(content);
+                        // Update last content
+                        {
+                            let mut last = last_content.lock().await;
+                            *last = Some(content.clone());
                         }
+                        
+                        // Call the callback with the new content
+                        callback(content);
                         
                         previous_image_hash = Some(image_hash);
                     }
