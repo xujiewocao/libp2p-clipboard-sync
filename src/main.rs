@@ -106,8 +106,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         clipboard_rx = Some(rx);
         
         // Start clipboard monitoring in a separate task
-        if let Some(ref clipboard_topic) = clipboard_topic {
-            let _clipboard_topic_clone = clipboard_topic.clone();
+        if let Some(ref _clipboard_topic) = clipboard_topic {
             let clipboard_tx_clone = clipboard_tx.clone();
             
             tokio::spawn(async move {
