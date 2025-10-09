@@ -1,10 +1,14 @@
 use anyhow::{Result, Context};
 use arboard::Clipboard;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, interval};
+
+// Global atomic flag to prevent echo when setting clipboard content from network
+static SETTING_FROM_NETWORK: AtomicBool = AtomicBool::new(false);
 
 /// Clipboard content structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,8 +80,6 @@ impl ClipboardContent {
 pub struct ClipboardSync {
     clipboard: Arc<Mutex<Clipboard>>,
     last_content: Arc<Mutex<Option<ClipboardContent>>>,
-    // Flag to indicate if we're setting content from network (to prevent echo)
-    setting_from_network: Arc<Mutex<bool>>,
 }
 
 impl ClipboardSync {
@@ -89,7 +91,6 @@ impl ClipboardSync {
         Ok(Self {
             clipboard: Arc::new(Mutex::new(clipboard)),
             last_content: Arc::new(Mutex::new(None)),
-            setting_from_network: Arc::new(Mutex::new(false)),
         })
     }
 
@@ -99,10 +100,8 @@ impl ClipboardSync {
         F: FnMut(ClipboardContent) + Send + 'static,
     {
         println!("Starting clipboard monitoring...");
-        
         let clipboard = self.clipboard.clone();
         let last_content = self.last_content.clone();
-        let setting_from_network = self.setting_from_network.clone();
         
         // Spawn a task to monitor clipboard changes
         tokio::spawn(async move {
@@ -112,15 +111,12 @@ impl ClipboardSync {
             
             loop {
                 interval.tick().await;
-                
+
                 // Check if we're currently setting content from network
-                let is_setting_from_network = {
-                    let guard = setting_from_network.lock().await;
-                    *guard
-                };
-                
-                if is_setting_from_network {
+                if SETTING_FROM_NETWORK.load(Ordering::Relaxed) {
                     // Skip this cycle if we're setting content from network
+                    SETTING_FROM_NETWORK.store(false, Ordering::Relaxed);
+                    println!("Skipping clipboard check because we're setting content from network.");
                     continue;
                 }
                 
@@ -238,12 +234,9 @@ impl ClipboardSync {
             let mut last = self.last_content.lock().await;
             *last = Some(content.clone());
         }
-        
+
         // Set the flag to indicate we're setting content from network
-        {
-            let mut setting = self.setting_from_network.lock().await;
-            *setting = true;
-        }
+        SETTING_FROM_NETWORK.store(true, Ordering::Relaxed);
         
         let result = {
             let mut clipboard = self.clipboard.lock().await;
@@ -278,12 +271,6 @@ impl ClipboardSync {
                 }
             }
         };
-        
-        // Reset the flag after setting content
-        {
-            let mut setting = self.setting_from_network.lock().await;
-            *setting = false;
-        }
         
         result
     }

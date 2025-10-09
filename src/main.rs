@@ -277,7 +277,7 @@ fn create_swarm(local_key: identity::Keypair) -> Result<Swarm<AppBehaviour>> {
         .heartbeat_interval(Duration::from_secs(10))
         .validation_mode(gossipsub::ValidationMode::Strict)
         .message_id_fn(message_id_fn)
-        .max_transmit_size(10 * 1024 * 1024) // 10MB max message size
+        .max_transmit_size(100 * 1024 * 1024) // 10MB max message size
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build gossipsub config: {:?}", e))?;
 
