@@ -272,10 +272,12 @@ fn create_swarm(local_key: identity::Keypair) -> Result<Swarm<AppBehaviour>> {
         gossipsub::MessageId::from(s.finish().to_string())
     };
 
+    // Increase the max transmit size to support image transfers (10MB)
     let gossipsub_config = gossipsub::ConfigBuilder::default()
         .heartbeat_interval(Duration::from_secs(10))
         .validation_mode(gossipsub::ValidationMode::Strict)
         .message_id_fn(message_id_fn)
+        .max_transmit_size(10 * 1024 * 1024) // 10MB max message size
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build gossipsub config: {:?}", e))?;
 
