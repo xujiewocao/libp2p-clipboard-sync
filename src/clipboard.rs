@@ -7,9 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, interval};
 
-// Global atomic flag to prevent echo when setting clipboard content from network
-static SETTING_FROM_NETWORK: AtomicBool = AtomicBool::new(false);
-
 /// Clipboard content structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardContent {
@@ -19,6 +16,7 @@ pub struct ClipboardContent {
     // Add width and height for image content
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub from_network: bool,
 }
 
 /// Type of clipboard content
@@ -38,6 +36,7 @@ impl ClipboardContent {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            from_network: false,
             width: None,
             height: None,
         }
@@ -54,6 +53,7 @@ impl ClipboardContent {
                 .as_secs(),
             width: Some(width),
             height: Some(height),
+            from_network: false,
         }
     }
     
@@ -77,6 +77,7 @@ impl ClipboardContent {
 }
 
 /// Clipboard synchronization service
+#[derive(Clone)]
 pub struct ClipboardSync {
     clipboard: Arc<Mutex<Clipboard>>,
     last_content: Arc<Mutex<Option<ClipboardContent>>>,
@@ -111,14 +112,6 @@ impl ClipboardSync {
             
             loop {
                 interval.tick().await;
-
-                // Check if we're currently setting content from network
-                if SETTING_FROM_NETWORK.load(Ordering::Relaxed) {
-                    // Skip this cycle if we're setting content from network
-                    SETTING_FROM_NETWORK.store(false, Ordering::Relaxed);
-                    println!("Skipping clipboard check because we're setting content from network.");
-                    continue;
-                }
                 
                 // Try to get clipboard content (both text and image)
                 let current_text = {
@@ -154,8 +147,9 @@ impl ClipboardSync {
                         };
                         
                         if should_send {
-                            let content = ClipboardContent::new_text(text.clone());
-                            
+                            let mut content = ClipboardContent::new_text(text.clone());
+                            // Mark as coming from network
+                            content.from_network = true;
                             // Update last content
                             {
                                 let mut last = last_content.lock().await;
@@ -234,9 +228,6 @@ impl ClipboardSync {
             let mut last = self.last_content.lock().await;
             *last = Some(content.clone());
         }
-
-        // Set the flag to indicate we're setting content from network
-        SETTING_FROM_NETWORK.store(true, Ordering::Relaxed);
         
         let result = {
             let mut clipboard = self.clipboard.lock().await;

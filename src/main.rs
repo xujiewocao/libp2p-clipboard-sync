@@ -100,17 +100,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize clipboard sync if enabled
     let mut clipboard_rx = None;
+    let clipboard_sync = clipboard::ClipboardSync::new().expect("Failed to create clipboard sync");
     if args.clipboard {
         // Create a channel for clipboard content
         let (clipboard_tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         clipboard_rx = Some(rx);
         
+        let clipboard_sync_clone = clipboard_sync.clone();
+
         // Start clipboard monitoring in a separate task
         if let Some(ref _clipboard_topic) = clipboard_topic {
             let clipboard_tx_clone = clipboard_tx.clone();
             
             tokio::spawn(async move {
-                let clipboard = clipboard::ClipboardSync::new().expect("Failed to create clipboard sync");
+                let clipboard = clipboard_sync_clone.clone();
                 
                 // Start monitoring clipboard changes
                 clipboard.start_monitoring(move |content| {
@@ -126,7 +129,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Read full lines from stdin
     let mut stdin = io::BufReader::new(io::stdin()).lines();
-
     // Main event loop
     info!("Enter messages to send to peers. Press Ctrl+C to exit.");
     loop {
@@ -227,8 +229,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // Handle clipboard message
                             if let Ok(content) = serde_json::from_slice::<clipboard::ClipboardContent>(&message.data) {
                                 // Handle clipboard content in a separate task
+                                let clipboard = clipboard_sync.clone();
                                 tokio::spawn(async move {
-                                    let clipboard = clipboard::ClipboardSync::new().expect("Failed to create clipboard sync");
                                     if let Err(e) = clipboard.handle_incoming_content(content).await {
                                         error!("Failed to handle incoming clipboard content: {:?}", e);
                                     }
