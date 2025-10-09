@@ -99,6 +99,28 @@ This is a known issue with Git Bash path handling. Use one of these solutions:
 2. Use PowerShell or CMD instead of Git Bash
 3. Escape the path: `cargo run -- "--connect" "\/ip4/172.29.88.251/tcp/55984"`
 
+## Building Release Binaries with GitHub Actions
+
+This repository includes GitHub Actions workflows to automatically build release binaries for Windows and macOS.
+
+### Creating a Release
+
+1. Create a new tag following semantic versioning:
+   ```bash
+   git tag -a v1.0.0 -m "Release version 1.0.0"
+   git push origin v1.0.0
+   ```
+
+2. The GitHub Actions workflow will automatically:
+   - Build binaries for Windows (x86_64) and macOS (x86_64, ARM64)
+   - Create a draft release with the built binaries
+
+3. Go to the GitHub Releases page and publish the draft release.
+
+### Downloading Pre-built Binaries
+
+Pre-built binaries for Windows and macOS are available in the [Releases](https://github.com/your-username/libp2p-clipboard-sync/releases) section.
+
 ## How it works
 
 1. **Peer Discovery**: Uses mDNS to automatically discover other peers on the local network
@@ -110,7 +132,7 @@ This is a known issue with Git Bash path handling. Use one of these solutions:
 
 ## Example Output
 
-```
+```bash
 [2024-01-01T12:00:00Z INFO  libp2p_clipboard] Local peer id: PeerId("12D3KooW...")
 [2024-01-01T12:00:00Z INFO  libp2p_clipboard] Listening on TCP: /ip4/0.0.0.0/tcp/54321
 [2024-01-01T12:00:05Z INFO  libp2p_clipboard] mDNS discovered a new peer: PeerId("12D3KooW...")
